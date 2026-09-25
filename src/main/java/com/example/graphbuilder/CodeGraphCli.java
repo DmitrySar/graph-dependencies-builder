@@ -38,9 +38,16 @@ public class CodeGraphCli {
         launcher.getEnvironment().setAutoImports(true);
         launcher.getEnvironment().setCommentEnabled(false);
 
-        // Добавляем все директории с исходниками проекта
+        // Добавляем все директории с исходниками проекта (исключая скрытые — начинающиеся с '.')
         Files.walk(projectRoot)
                 .filter(p -> p.toString().endsWith(Paths.get("src", "main", "java").toString()))
+                .filter(p -> {
+                    Path rel = projectRoot.relativize(p);
+                    for (Path segment : rel) {
+                        if (segment.toString().startsWith(".")) return false;
+                    }
+                    return true;
+                })
                 .forEach(p -> launcher.addInputResource(p.toString()));
 
         CtModel model = launcher.buildModel();
