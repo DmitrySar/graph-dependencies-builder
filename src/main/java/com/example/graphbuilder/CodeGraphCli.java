@@ -40,13 +40,7 @@ public class CodeGraphCli {
 
         // Добавляем все директории с исходниками проекта
         Files.walk(projectRoot)
-                .filter(p -> {
-                    Path rel = projectRoot.relativize(p);
-                    for (Path segment : rel) {
-                        if (segment.toString().startsWith(".")) return false;
-                    }
-                    return true;
-                })
+                .filter(p -> p.toString().endsWith(Paths.get("src", "main", "java").toString()))
                 .forEach(p -> launcher.addInputResource(p.toString()));
 
         CtModel model = launcher.buildModel();
