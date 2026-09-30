@@ -38,10 +38,23 @@ public class CodeGraphCli {
         launcher.getEnvironment().setAutoImports(true);
         launcher.getEnvironment().setCommentEnabled(false);
 
-        // Добавляем все директории с исходниками проекта
+        // Дедупликация файлов по FQN: одинаковый пакет+имя класса не должен повторяться
+        Map<String, Path> fqnToPath = new LinkedHashMap<>();
         Files.walk(projectRoot)
-                .filter(p -> p.toString().endsWith(Paths.get("src", "main", "java").toString()))
-                .forEach(p -> launcher.addInputResource(p.toString()));
+                .filter(p -> p.toString().endsWith(".java"))
+                .filter(p -> !p.toString().contains("/target/") && !p.toString().contains("\\target\\"))
+                .filter(p -> !p.toString().contains("/.git/") && !p.toString().contains("\\.git\\"))
+                .forEach(path -> {
+                    try {
+                        String content = Files.readString(path);
+                        Matcher m = Pattern.compile("^\\s*package\\s+([a-zA-Z0-9_.]+);").matcher(content);
+                        if (m.find()) {
+                            String fqn = m.group(1) + "." + path.getFileName().toString().replace(".java", "");
+                            fqnToPath.putIfAbsent(fqn, path.toAbsolutePath());
+                        }
+                    } catch (Exception ignored) {}
+                });
+        fqnToPath.values().forEach(p -> launcher.addInputResource(p.toString()));
 
         CtModel model = launcher.buildModel();
 
