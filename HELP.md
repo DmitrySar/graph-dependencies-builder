@@ -3,7 +3,7 @@
 запуск: `java -jar ./target/graphbuilder-0.0.1-SNAPSHOT.jar путь_к_проекту`
 
 ---
-Добавить в Agenent.md(GIGACODE.md)
+Добавить в AGENTS.md(GIGACODE.md)
 
 ### РОЛЬ
 Ты — автономный Senior Java/Spring архитектор. В проекте сгенерирован предварительный индекс связей в папке `.code-graph/`.
