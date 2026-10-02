@@ -37,24 +37,17 @@ public class CodeGraphCli {
         launcher.getEnvironment().setNoClasspath(true); // Парсит даже если зависимости не скачаны
         launcher.getEnvironment().setAutoImports(true);
         launcher.getEnvironment().setCommentEnabled(false);
+        launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
+        launcher.getEnvironment().setIgnoreSyntaxErrors(true);
 
-        // Дедупликация файлов по FQN: одинаковый пакет+имя класса не должен повторяться
-        Map<String, Path> fqnToPath = new LinkedHashMap<>();
+        // Добавляем все директории с исходниками проекта, исключая target/.git
         Files.walk(projectRoot)
-                .filter(p -> p.toString().endsWith(".java"))
-                .filter(p -> !p.toString().contains("/target/") && !p.toString().contains("\\target\\"))
-                .filter(p -> !p.toString().contains("/.git/") && !p.toString().contains("\\.git\\"))
-                .forEach(path -> {
-                    try {
-                        String content = Files.readString(path);
-                        Matcher m = Pattern.compile("^\\s*package\\s+([a-zA-Z0-9_.]+);").matcher(content);
-                        if (m.find()) {
-                            String fqn = m.group(1) + "." + path.getFileName().toString().replace(".java", "");
-                            fqnToPath.putIfAbsent(fqn, path.toAbsolutePath());
-                        }
-                    } catch (Exception ignored) {}
-                });
-        fqnToPath.values().forEach(p -> launcher.addInputResource(p.toString()));
+                .filter(p -> p.toString().endsWith(Paths.get("src", "main", "java").toString()))
+                .filter(path -> !path.toString().contains("/target/") && !path.toString().contains("\\target\\"))
+                .filter(path -> !path.toString().contains("/.git/") && !path.toString().contains("\\.git\\"))
+                .map(Path::toAbsolutePath)
+                .distinct()
+                .forEach(p -> launcher.addInputResource(p.toString()));
 
         CtModel model = launcher.buildModel();
 
@@ -62,11 +55,18 @@ public class CodeGraphCli {
         List<String> graphEdges = new ArrayList<>();
         List<String> calledByEdges = new ArrayList<>();
         List<String> endpointsJsonl = new ArrayList<>();
+        Set<String> seenFqns = new HashSet<>();
 
         for (CtType<?> type : model.getAllTypes()) {
             if (type.isAnonymous() || type.getPackage() == null) continue;
 
             String className = type.getQualifiedName();
+            if (seenFqns.contains(className)) {
+                String dupFile = getRelativePath(projectRoot, type);
+                System.err.println("[WARN] Пропускаю дубль: " + className + " (" + dupFile + ")");
+                continue;
+            }
+            seenFqns.add(className);
             String relativeFile = getRelativePath(projectRoot, type);
             int classLine = type.getPosition().isValidPosition() ? type.getPosition().getLine() : 1;
 
