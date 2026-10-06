@@ -2,15 +2,17 @@ package com.example.graphbuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
-    import spoon.reflect.code.CtAbstractInvocation;
-    import spoon.reflect.code.CtConstructorCall;
-    import spoon.reflect.code.CtExpression;
-    import spoon.reflect.code.CtLiteral;
-    import spoon.reflect.code.CtNewArray;
-    import spoon.reflect.declaration.*;
+import spoon.reflect.code.CtAbstractInvocation;
+import spoon.reflect.code.CtConstructorCall;
+import spoon.reflect.code.CtExpression;
+import spoon.reflect.code.CtLiteral;
+import spoon.reflect.code.CtNewArray;
+import spoon.reflect.declaration.*;
 import spoon.reflect.reference.CtTypeReference;
 
 import java.io.*;
@@ -20,41 +22,76 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Service
 public class CodeGraphCli {
 
+    private static final Logger LOG = LoggerFactory.getLogger(CodeGraphCli.class);
     private static final ObjectMapper MAPPER = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
-    public void generateGraphDependencies(String[] args) throws Exception {
-        Path projectRoot = args.length > 0 ? Path.of(args[0]).toAbsolutePath() : Path.of(".").toAbsolutePath();
-        Path outDir = projectRoot.resolve(".code-graph");
-        Files.createDirectories(outDir.resolve("classes"));
+    private static final String SRC_MAIN_JAVA = "src/main/java";
+    private static final String TARGET_DIR = "target";
+    private static final String GIT_DIR = ".git";
+    private static final String OUTPUT_DIR = ".code-graph";
+    private static final String CLASSES_DIR = "classes";
 
-        System.out.println("🚀 [1/5] Сканирование структуры проекта: " + projectRoot);
+    public void generateGraphDependencies(String[] args) throws Exception {
+        Path projectRoot = resolveProjectRoot(args);
+        Path outDir = projectRoot.resolve(OUTPUT_DIR);
+        Files.createDirectories(outDir.resolve(CLASSES_DIR));
+
+        LOG.info("🚀 [1/5] Сканирование структуры проекта: {}", projectRoot);
         Map<String, Object> meta = scanProjectStructure(projectRoot);
         Files.writeString(outDir.resolve("meta.json"), MAPPER.writeValueAsString(meta));
 
-        System.out.println("🔍 [2/5] Построение AST через Spoon...");
+        LOG.info("🔍 [2/5] Построение AST через Spoon...");
+        CtModel model = buildModel(projectRoot);
+
+        LOG.info("⚡ [3/5] Извлечение графа, связей и эндпоинтов...");
+        ExtractionResult result = extractGraph(model, projectRoot, outDir);
+
+        LOG.info("💾 [4/5] Запись шардов и плоских файлов...");
+        writeOutput(outDir, result);
+
+        LOG.info("✅ [5/5] Анализ успешно завершен! Файлы сохранены в: {}", outDir);
+    }
+
+    // ========== Stage 1: Project root resolution ==========
+
+    private static Path resolveProjectRoot(String[] args) {
+        return args.length > 0 ? Path.of(args[0]).toAbsolutePath() : Path.of(".").toAbsolutePath();
+    }
+
+    // ========== Stage 2: Spoon model building ==========
+
+    private static CtModel buildModel(Path projectRoot) {
         Launcher launcher = new Launcher();
-        launcher.getEnvironment().setNoClasspath(true); // Парсит даже если зависимости не скачаны
+        launcher.getEnvironment().setNoClasspath(true);
         launcher.getEnvironment().setAutoImports(true);
         launcher.getEnvironment().setCommentEnabled(false);
         launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
 
-        // Добавляем все директории с исходниками проекта, исключая target/.git
-        Files.walk(projectRoot)
-                .filter(p -> p.toString().endsWith(Paths.get("src", "main", "java").toString()))
-                .filter(path -> !path.toString().contains("/target/") && !path.toString().contains("\\target\\"))
-                .filter(path -> !path.toString().contains("/.git/") && !path.toString().contains("\\.git\\"))
-                .map(Path::toAbsolutePath)
-                .distinct()
-                .forEach(p -> launcher.addInputResource(p.toString()));
+        try (Stream<Path> walk = Files.walk(projectRoot)) {
+            walk.filter(p -> p.toString().endsWith(SRC_MAIN_JAVA))
+                    .filter(path -> !path.toString().contains("/" + TARGET_DIR + "/")
+                            && !path.toString().contains("\\" + TARGET_DIR + "\\"))
+                    .filter(path -> !path.toString().contains("/" + GIT_DIR + "/")
+                            && !path.toString().contains("\\" + GIT_DIR + "\\"))
+                    .map(p -> p.toAbsolutePath().toString())
+                    .distinct()
+                    .forEach(launcher::addInputResource);
+        } catch (IOException e) {
+            LOG.warn("Ошибка при обходе дерева исходников: {}", e.getMessage());
+        }
 
-        CtModel model = launcher.buildModel();
+        return launcher.buildModel();
+    }
 
-        System.out.println("⚡ [3/5] Извлечение графа, связей и эндпоинтов...");
+    // ========== Stage 3: Graph extraction ==========
+
+    private static ExtractionResult extractGraph(CtModel model, Path projectRoot, Path outDir) throws IOException {
         List<String> graphEdges = new ArrayList<>();
         List<String> calledByEdges = new ArrayList<>();
         List<String> endpointsJsonl = new ArrayList<>();
@@ -66,34 +103,17 @@ public class CodeGraphCli {
             String className = type.getQualifiedName();
             if (seenFqns.contains(className)) {
                 String dupFile = getRelativePath(projectRoot, type);
-                System.err.println("[WARN] Пропускаю дубль: " + className + " (" + dupFile + ")");
+                LOG.warn("Пропускаю дубль: {} ({})", className, dupFile);
                 continue;
             }
             seenFqns.add(className);
             String relativeFile = getRelativePath(projectRoot, type);
             int classLine = type.getPosition().isValidPosition() ? type.getPosition().getLine() : 1;
 
-            // Наследование и интерфейсы
-            if (type.getSuperclass() != null) {
-                graphEdges.add(tsv(className, "extends", type.getSuperclass().getQualifiedName(), relativeFile, classLine, "inheritance"));
-            }
-            for (CtTypeReference<?> iface : type.getSuperInterfaces()) {
-                graphEdges.add(tsv(className, "implements", iface.getQualifiedName(), relativeFile, classLine, "interface"));
-            }
-
-            // Spring стереотипы
+            extractInheritance(type, className, relativeFile, classLine, graphEdges);
             extractClassStereotypes(type, className, relativeFile, classLine, graphEdges);
+            extractAutowiredFields(type, className, relativeFile, classLine, graphEdges);
 
-            // Обработка полей (DI: @Autowired, @Inject)
-            for (CtField<?> field : type.getFields()) {
-                if (hasAnyAnnotation(field, "Autowired", "Inject", "Resource")) {
-                    String fieldType = field.getType().getQualifiedName();
-                    int fLine = field.getPosition().isValidPosition() ? field.getPosition().getLine() : classLine;
-                    graphEdges.add(tsv(className, "autowire_field", fieldType, relativeFile, fLine, "field: " + field.getSimpleName()));
-                }
-            }
-
-            // Обработка методов
             Map<String, Object> classDumpMethods = new LinkedHashMap<>();
             String baseMapping = extractMappingPath(type.getAnnotations());
 
@@ -101,62 +121,91 @@ public class CodeGraphCli {
                 String methodSig = formatMethodSignature(className, method);
                 int mLine = method.getPosition().isValidPosition() ? method.getPosition().getLine() : classLine;
 
-                // Проверка REST-эндпоинтов
                 extractEndpoint(method, className, methodSig, relativeFile, mLine, baseMapping, endpointsJsonl);
-
-                // Spring-аннотации метода (@Transactional, @EventListener, @Bean)
                 extractMethodAnnotations(method, methodSig, relativeFile, mLine, graphEdges);
-
-                // Поиск вызовов внутри метода (calls)
-                method.getElements(e -> e instanceof CtAbstractInvocation).forEach(inv -> {
-                    CtAbstractInvocation<?> invocation = (CtAbstractInvocation<?>) inv;
-                    int callLine = invocation.getPosition().isValidPosition() ? invocation.getPosition().getLine() : mLine;
-
-                    String target;
-                    String typeCall;
-                    if (invocation instanceof CtConstructorCall<?> constr) {
-                        target = constr.getType().getQualifiedName() + "#<init>";
-                        typeCall = "instantiate";
-                    } else {
-                        target = resolveInvocationTarget(invocation);
-                        typeCall = "call";
-                    }
-
-                    graphEdges.add(tsv(methodSig, typeCall, target, relativeFile, callLine, "invokes"));
-                    calledByEdges.add(target + "\t" + methodSig + "\t" + relativeFile + ":" + callLine);
-                });
+                extractMethodCalls(method, methodSig, relativeFile, mLine, graphEdges, calledByEdges);
 
                 classDumpMethods.put(method.getSimpleName(), Map.of(
                         "signature", methodSig,
                         "line", mLine,
                         "visibility", method.getVisibility() != null ? method.getVisibility().toString() : "package-private",
-                        "annotations", method.getAnnotations().stream().map(a -> a.getAnnotationType().getSimpleName()).toList()
+                        "annotations", method.getAnnotations().stream()
+                                .map(a -> a.getAnnotationType().getSimpleName()).toList()
                 ));
             }
 
-            // Сохраняем индивидуальный файл класса
-            Map<String, Object> classDump = Map.of(
-                    "class", className,
-                    "file", relativeFile,
-                    "line", classLine,
-                    "kind", type.getClass().getSimpleName().replace("Ct", "").replace("Impl", "").toLowerCase(),
-                    "annotations", type.getAnnotations().stream().map(a -> a.getAnnotationType().getSimpleName()).toList(),
-                    "methods", classDumpMethods
-            );
-            Files.writeString(outDir.resolve("classes/" + className + ".json"), MAPPER.writeValueAsString(classDump));
+            writeClassDump(outDir, className, relativeFile, classLine, type, classDumpMethods);
         }
 
-        System.out.println("💾 [4/5] Запись шардов и плоских файлов...");
-        Files.write(outDir.resolve("graph.tsv"), graphEdges, StandardCharsets.UTF_8);
-        Files.write(outDir.resolve("called_by.tsv"), calledByEdges, StandardCharsets.UTF_8);
-        Files.write(outDir.resolve("endpoints.jsonl"), endpointsJsonl, StandardCharsets.UTF_8);
-
-        System.out.println("✅ [5/5] Анализ успешно завершен! Файлы сохранены в: " + outDir);
+        return new ExtractionResult(graphEdges, calledByEdges, endpointsJsonl);
     }
 
-    // Вспомогательные методы извлечения семантики
+    private static void extractInheritance(CtType<?> type, String className, String file, int line, List<String> edges) {
+        if (type.getSuperclass() != null) {
+            edges.add(tsv(className, "extends", type.getSuperclass().getQualifiedName(), file, line, "inheritance"));
+        }
+        for (CtTypeReference<?> iface : type.getSuperInterfaces()) {
+            edges.add(tsv(className, "implements", iface.getQualifiedName(), file, line, "interface"));
+        }
+    }
 
-    private static String tsv(String from, String type, String to, String file, int line, String note) {
+    private static void extractAutowiredFields(CtType<?> type, String className, String file, int line, List<String> edges) {
+        for (CtField<?> field : type.getFields()) {
+            if (hasAnyAnnotation(field, "Autowired", "Inject", "Resource")) {
+                String fieldType = field.getType().getQualifiedName();
+                int fLine = field.getPosition().isValidPosition() ? field.getPosition().getLine() : line;
+                edges.add(tsv(className, "autowire_field", fieldType, file, fLine, "field: " + field.getSimpleName()));
+            }
+        }
+    }
+
+    private static void extractMethodCalls(CtMethod<?> method, String methodSig, String file, int line,
+                                           List<String> graphEdges, List<String> calledByEdges) {
+        method.getElements(e -> e instanceof CtAbstractInvocation).forEach(inv -> {
+            CtAbstractInvocation<?> invocation = (CtAbstractInvocation<?>) inv;
+            int callLine = invocation.getPosition().isValidPosition() ? invocation.getPosition().getLine() : line;
+
+            String target;
+            String typeCall;
+            if (invocation instanceof CtConstructorCall<?> constr) {
+                target = constr.getType().getQualifiedName() + "#<init>";
+                typeCall = "instantiate";
+            } else {
+                target = resolveInvocationTarget(invocation);
+                typeCall = "call";
+            }
+
+            graphEdges.add(tsv(methodSig, typeCall, target, file, callLine, "invokes"));
+            calledByEdges.add(target + "\t" + methodSig + "\t" + file + ":" + callLine);
+        });
+    }
+
+    private static void writeClassDump(Path outDir, String className, String relativeFile, int classLine,
+                                       CtType<?> type, Map<String, Object> methods) throws IOException {
+        Map<String, Object> classDump = Map.of(
+                "class", className,
+                "file", relativeFile,
+                "line", classLine,
+                "kind", type.getClass().getSimpleName().replace("Ct", "").replace("Impl", "").toLowerCase(),
+                "annotations", type.getAnnotations().stream()
+                        .map(a -> a.getAnnotationType().getSimpleName()).toList(),
+                "methods", methods
+        );
+        Files.writeString(outDir.resolve(CLASSES_DIR + "/" + className + ".json"),
+                MAPPER.writeValueAsString(classDump));
+    }
+
+    // ========== Stage 4: Output writing ==========
+
+    private static void writeOutput(Path outDir, ExtractionResult result) throws IOException {
+        Files.write(outDir.resolve("graph.tsv"), result.graphEdges(), StandardCharsets.UTF_8);
+        Files.write(outDir.resolve("called_by.tsv"), result.calledByEdges(), StandardCharsets.UTF_8);
+        Files.write(outDir.resolve("endpoints.jsonl"), result.endpointsJsonl(), StandardCharsets.UTF_8);
+    }
+
+    // ========== Helper methods ==========
+
+    static String tsv(String from, String type, String to, String file, int line, String note) {
         return String.join("\t", from, type, to, file + ":" + line, note);
     }
 
@@ -181,8 +230,8 @@ public class CodeGraphCli {
 
     private static void extractClassStereotypes(CtType<?> type, String className, String file, int line, List<String> edges) {
         for (CtAnnotation<?> ann : type.getAnnotations()) {
-            String name = ann.getAnnotationType().getSimpleName();
-            if (name.matches("RestController|Controller|Service|Repository|Component|Configuration")) {
+            String name = safeAnnotationName(ann);
+            if (name != null && name.matches("RestController|Controller|Service|Repository|Component|Configuration")) {
                 edges.add(tsv(className, "stereotype", "@" + name, file, line, "spring_component"));
             }
         }
@@ -190,7 +239,8 @@ public class CodeGraphCli {
 
     private static void extractMethodAnnotations(CtMethod<?> method, String sig, String file, int line, List<String> edges) {
         for (CtAnnotation<?> ann : method.getAnnotations()) {
-            String name = ann.getAnnotationType().getSimpleName();
+            String name = safeAnnotationName(ann);
+            if (name == null) continue;
             if (name.equals("Transactional")) {
                 edges.add(tsv(sig, "has_transaction", "@Transactional", file, line, "transaction_boundary"));
             } else if (name.equals("EventListener")) {
@@ -204,7 +254,9 @@ public class CodeGraphCli {
     private static void extractEndpoint(CtMethod<?> method, String className, String sig, String file, int line,
                                         String baseMapping, List<String> endpoints) {
         for (CtAnnotation<?> ann : method.getAnnotations()) {
-            String annName = ann.getAnnotationType().getSimpleName();
+            String annName = safeAnnotationName(ann);
+            if (annName == null) continue;
+
             String httpMethod = switch (annName) {
                 case "GetMapping" -> "GET";
                 case "PostMapping" -> "POST";
@@ -236,9 +288,19 @@ public class CodeGraphCli {
         }
     }
 
+    private static String safeAnnotationName(CtAnnotation<?> ann) {
+        try {
+            return ann.getAnnotationType().getSimpleName();
+        } catch (Exception e) {
+            LOG.debug("Не удалось получить имя аннотации: {}", e.getMessage());
+            return null;
+        }
+    }
+
     private static String extractMappingPath(Collection<CtAnnotation<?>> annotations) {
         for (CtAnnotation<?> ann : annotations) {
-            if (ann.getAnnotationType().getSimpleName().contains("Mapping")) {
+            String name = safeAnnotationName(ann);
+            if (name != null && name.contains("Mapping")) {
                 try {
                     return extractAnnotationValue(ann);
                 } catch (Exception ignored) {
@@ -250,11 +312,15 @@ public class CodeGraphCli {
     }
 
     private static String extractAnnotationValue(CtAnnotation<?> ann) {
-        Map<String, CtExpression> values = ann.getValues();
-        for (String key : new String[] { "value", "path" }) {
-            if (values.get(key) != null) {
-                return annotationValueToString(values.get(key));
+        try {
+            Map<String, CtExpression> values = ann.getValues();
+            for (String key : new String[]{"value", "path"}) {
+                if (values.get(key) != null) {
+                    return annotationValueToString(values.get(key));
+                }
             }
+        } catch (Exception e) {
+            LOG.debug("Не удалось извлечь значение аннотации: {}", e.getMessage());
         }
         return "";
     }
@@ -270,20 +336,25 @@ public class CodeGraphCli {
                 if (sb.length() > 0) {
                     sb.append(',');
                 }
-                sb.append(annotationValueToString((CtElement) element));
+                if (element instanceof CtElement) {
+                    sb.append(annotationValueToString((CtElement) element));
+                }
             }
             return sb.toString();
         }
         return String.valueOf(expr).trim();
     }
 
-    private static String normalizePath(String path) {
+    static String normalizePath(String path) {
         return path.replaceAll("//+", "/").replaceAll("/$", "");
     }
 
     private static boolean hasAnyAnnotation(CtElement elem, String... names) {
         Set<String> set = Set.of(names);
-        return elem.getAnnotations().stream().anyMatch(a -> set.contains(a.getAnnotationType().getSimpleName()));
+        return elem.getAnnotations().stream()
+                .map(a -> safeAnnotationName(a))
+                .filter(Objects::nonNull)
+                .anyMatch(set::contains);
     }
 
     private static String getRelativePath(Path root, CtType<?> type) {
@@ -298,14 +369,18 @@ public class CodeGraphCli {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("build_system", Files.exists(root.resolve("pom.xml")) ? "Maven" : "Gradle");
 
-        // Поиск базового пакета и Spring Boot версии
         try {
-                    if (Files.exists(root.resolve("pom.xml"))) {
-                        Matcher m = Pattern.compile("<spring-boot\\.version>(.*?)</spring-boot\\.version>").matcher(Files.readString(root.resolve("pom.xml")));
+            if (Files.exists(root.resolve("pom.xml"))) {
+                Matcher m = Pattern.compile("<spring-boot\\.version>(.*?)</spring-boot\\.version>")
+                        .matcher(Files.readString(root.resolve("pom.xml")));
                 if (m.find()) meta.put("spring_boot_version", m.group(1));
             }
-            Files.walk(root)
-                    .filter(p -> p.toString().endsWith(".java"))
+        } catch (Exception e) {
+            LOG.debug("Не удалось прочитать версию Spring Boot из pom.xml: {}", e.getMessage());
+        }
+
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.filter(p -> p.toString().endsWith(".java"))
                     .forEach(p -> {
                         try {
                             String content = Files.readString(p);
@@ -315,7 +390,18 @@ public class CodeGraphCli {
                             }
                         } catch (Exception ignored) {}
                     });
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOG.debug("Не удалось найти базовый пакет: {}", e.getMessage());
+        }
+
         return meta;
     }
+
+    // ========== Result container ==========
+
+    private record ExtractionResult(
+            List<String> graphEdges,
+            List<String> calledByEdges,
+            List<String> endpointsJsonl
+    ) {}
 }
