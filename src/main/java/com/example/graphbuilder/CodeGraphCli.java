@@ -5,9 +5,12 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.springframework.stereotype.Service;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
-import spoon.reflect.code.CtAbstractInvocation;
-import spoon.reflect.code.CtConstructorCall;
-import spoon.reflect.declaration.*;
+    import spoon.reflect.code.CtAbstractInvocation;
+    import spoon.reflect.code.CtConstructorCall;
+    import spoon.reflect.code.CtExpression;
+    import spoon.reflect.code.CtLiteral;
+    import spoon.reflect.code.CtNewArray;
+    import spoon.reflect.declaration.*;
 import spoon.reflect.reference.CtTypeReference;
 
 import java.io.*;
@@ -213,7 +216,12 @@ public class CodeGraphCli {
             };
 
             if (httpMethod != null) {
-                String methodPath = extractAnnotationValue(ann);
+                String methodPath;
+                try {
+                    methodPath = extractAnnotationValue(ann);
+                } catch (Exception ignored) {
+                    methodPath = "";
+                }
                 String fullPath = normalizePath(baseMapping + "/" + methodPath);
 
                 Map<String, Object> ep = new LinkedHashMap<>();
@@ -231,20 +239,42 @@ public class CodeGraphCli {
     private static String extractMappingPath(Collection<CtAnnotation<?>> annotations) {
         for (CtAnnotation<?> ann : annotations) {
             if (ann.getAnnotationType().getSimpleName().contains("Mapping")) {
-                return extractAnnotationValue(ann);
+                try {
+                    return extractAnnotationValue(ann);
+                } catch (Exception ignored) {
+                    continue;
+                }
             }
         }
         return "";
     }
 
     private static String extractAnnotationValue(CtAnnotation<?> ann) {
-        if (ann.getValue("value") != null) {
-            return ann.getValue("value").toString().replaceAll("[\"\\[\\]]", "");
-        }
-        if (ann.getValue("path") != null) {
-            return ann.getValue("path").toString().replaceAll("[\"\\[\\]]", "");
+        Map<String, CtExpression> values = ann.getValues();
+        for (String key : new String[] { "value", "path" }) {
+            if (values.get(key) != null) {
+                return annotationValueToString(values.get(key));
+            }
         }
         return "";
+    }
+
+    private static String annotationValueToString(CtElement expr) {
+        if (expr instanceof CtLiteral literal) {
+            Object value = literal.getValue();
+            return value == null ? "" : String.valueOf(value).trim();
+        }
+        if (expr instanceof CtNewArray array) {
+            StringBuilder sb = new StringBuilder();
+            for (Object element : array.getElements()) {
+                if (sb.length() > 0) {
+                    sb.append(',');
+                }
+                sb.append(annotationValueToString((CtElement) element));
+            }
+            return sb.toString();
+        }
+        return String.valueOf(expr).trim();
     }
 
     private static String normalizePath(String path) {
@@ -270,9 +300,8 @@ public class CodeGraphCli {
 
         // Поиск базового пакета и Spring Boot версии
         try {
-            if (Files.exists(root.resolve("pom.xml"))) {
-                String pom = Files.writeString(Path.of("/tmp/pom"), Files.readString(root.resolve("pom.xml"))).toString();
-                Matcher m = Pattern.compile("<spring-boot\\.version>(.*?)</spring-boot\\.version>").matcher(Files.readString(root.resolve("pom.xml")));
+                    if (Files.exists(root.resolve("pom.xml"))) {
+                        Matcher m = Pattern.compile("<spring-boot\\.version>(.*?)</spring-boot\\.version>").matcher(Files.readString(root.resolve("pom.xml")));
                 if (m.find()) meta.put("spring_boot_version", m.group(1));
             }
             Files.walk(root)
