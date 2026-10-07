@@ -73,12 +73,13 @@ public class CodeGraphCli {
         launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
 
-        Path srcMainJava = projectRoot.resolve(SRC_MAIN_JAVA).normalize();
+        String srcMainJava = SRC_MAIN_JAVA.replace("/", "\\");
         try (Stream<Path> walk = Files.walk(projectRoot)) {
             walk.filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> p.toAbsolutePath().normalize().startsWith(srcMainJava))
+                    .filter(p -> p.toAbsolutePath().normalize().toString().contains(srcMainJava))
                     .filter(path -> !path.toString().contains(TARGET_DIR))
                     .filter(path -> !path.toString().contains(GIT_DIR))
+                    .filter(path -> !path.toAbsolutePath().normalize().endsWith("CodeGraphCli.java"))
                     .map(p -> p.toAbsolutePath().toString())
                     .distinct()
                     .forEach(launcher::addInputResource);
@@ -371,9 +372,22 @@ public class CodeGraphCli {
 
         try {
             if (Files.exists(root.resolve("pom.xml"))) {
+                String pomContent = Files.readString(root.resolve("pom.xml"));
+                // Сначала проверяем явное свойство <spring-boot.version>
                 Matcher m = Pattern.compile("<spring-boot\\.version>(.*?)</spring-boot\\.version>")
-                        .matcher(Files.readString(root.resolve("pom.xml")));
-                if (m.find()) meta.put("spring_boot_version", m.group(1));
+                        .matcher(pomContent);
+                if (m.find()) {
+                    meta.put("spring_boot_version", m.group(1));
+                } else {
+                    // Ищем версию в parent-секции для spring-boot-starter-parent
+                    Matcher parentMatcher = Pattern.compile(
+                            "<parent>\\s*<groupId>org\\.springframework\\.boot</groupId>\\s*<artifactId>spring-boot-starter-parent</artifactId>\\s*<version>(.*?)</version>",
+                            Pattern.DOTALL
+                    ).matcher(pomContent);
+                    if (parentMatcher.find()) {
+                        meta.put("spring_boot_version", parentMatcher.group(1));
+                    }
+                }
             }
         } catch (Exception e) {
             LOG.debug("Не удалось прочитать версию Spring Boot из pom.xml: {}", e.getMessage());
