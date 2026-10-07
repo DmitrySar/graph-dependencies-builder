@@ -105,6 +105,53 @@ class CodeGraphCliTest {
                 "graph.tsv should contain call or instantiate edges");
     }
 
+    @Test
+    void resolveSourceRoots_singleModuleProject() {
+        Path testProject = Path.of("src/test/resources/test-project");
+        List<Path> roots = CodeGraphCli.resolveSourceRoots(testProject);
+        assertFalse(roots.isEmpty(), "Should find at least one source root");
+        assertTrue(roots.stream().anyMatch(p -> p.endsWith("src/main/java")),
+                "Should contain src/main/java");
+    }
+
+    @Test
+    void resolveSourceRoots_multiModuleProject() {
+        Path multiModuleProject = Path.of("src/test/resources/multi-module-project");
+        List<Path> roots = CodeGraphCli.resolveSourceRoots(multiModuleProject);
+
+        assertTrue(roots.stream().anyMatch(p -> p.endsWith("module-a/src/main/java")),
+                "Should contain module-a/src/main/java");
+        assertTrue(roots.stream().anyMatch(p -> p.endsWith("module-b/src/main/java")),
+                "Should contain module-b/src/main/java");
+    }
+
+    @Test
+    void integrationTest_multiModuleProject(@TempDir Path tempDir) throws Exception {
+        Path testProjectSrc = Path.of("src/test/resources/multi-module-project");
+        copyDirectory(testProjectSrc, tempDir);
+
+        cli.generateGraphDependencies(new String[]{tempDir.toString()});
+
+        Path outDir = tempDir.resolve(".code-graph");
+        assertTrue(Files.exists(outDir), "Output directory should exist");
+
+        // Verify both modules' classes were analyzed
+        Path moduleAServiceJson = outDir.resolve("classes/com.modulea.ModuleAService.json");
+        assertTrue(Files.exists(moduleAServiceJson), "ModuleAService.json should exist");
+
+        Path moduleBServiceJson = outDir.resolve("classes/com.moduleb.ModuleBService.json");
+        assertTrue(Files.exists(moduleBServiceJson), "ModuleBService.json should exist");
+
+        // Verify graph.tsv contains edges from both modules
+        Path graphFile = outDir.resolve("graph.tsv");
+        assertTrue(Files.exists(graphFile));
+        String graphContent = Files.readString(graphFile);
+        assertTrue(graphContent.contains("com.modulea.ModuleAService"),
+                "graph.tsv should contain ModuleAService");
+        assertTrue(graphContent.contains("com.moduleb.ModuleBService"),
+                "graph.tsv should contain ModuleBService");
+    }
+
     private void copyDirectory(Path source, Path target) throws IOException {
         try (var walk = Files.walk(source)) {
             walk.forEach(sourcePath -> {

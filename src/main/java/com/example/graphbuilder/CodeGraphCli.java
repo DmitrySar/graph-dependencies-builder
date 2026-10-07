@@ -73,10 +73,15 @@ public class CodeGraphCli {
         launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
 
-        Path srcMainJavaPath = projectRoot.resolve(SRC_MAIN_JAVA).normalize();
+        List<Path> sourceRoots = resolveSourceRoots(projectRoot);
+        if (sourceRoots.isEmpty()) {
+            LOG.warn("Не найдено исходных корней в {}", projectRoot);
+            return launcher.buildModel();
+        }
+
         try (Stream<Path> walk = Files.walk(projectRoot)) {
             walk.filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> p.toAbsolutePath().normalize().startsWith(srcMainJavaPath))
+                    .filter(p -> isUnderAnySourceRoot(p.toAbsolutePath().normalize(), sourceRoots))
                     .filter(path -> !path.toString().contains(TARGET_DIR))
                     .filter(path -> !path.toString().contains(GIT_DIR))
                     .filter(path -> !path.toAbsolutePath().normalize().endsWith("CodeGraphCli.java"))
@@ -88,6 +93,53 @@ public class CodeGraphCli {
         }
 
         return launcher.buildModel();
+    }
+
+    /**
+     * Resolves all source root directories for the project.
+     * For single-module Maven projects, returns {projectRoot}/src/main/java.
+     * For multi-module Maven projects, reads the parent pom.xml &lt;modules&gt; section
+     * and returns {projectRoot}/{module}/src/main/java for each module,
+     * plus the root src/main/java if it exists (for shared sources).
+     */
+    static List<Path> resolveSourceRoots(Path projectRoot) {
+        List<Path> sourceRoots = new ArrayList<>();
+
+        Path rootSrc = projectRoot.resolve(SRC_MAIN_JAVA).normalize();
+        if (Files.isDirectory(rootSrc)) {
+            sourceRoots.add(rootSrc);
+        }
+
+        Path pomPath = projectRoot.resolve("pom.xml");
+        if (Files.exists(pomPath)) {
+            try {
+                String pomContent = Files.readString(pomPath);
+                Pattern modulePattern = Pattern.compile(
+                        "<module>\\s*(.*?)\\s*</module>", Pattern.DOTALL);
+                Matcher matcher = modulePattern.matcher(pomContent);
+                while (matcher.find()) {
+                    String moduleName = matcher.group(1).trim();
+                    if (moduleName.isEmpty()) continue;
+                    Path moduleSrc = projectRoot.resolve(moduleName).resolve(SRC_MAIN_JAVA).normalize();
+                    if (Files.isDirectory(moduleSrc)) {
+                        sourceRoots.add(moduleSrc);
+                    }
+                }
+            } catch (IOException e) {
+                LOG.warn("Не удалось прочитать pom.xml для поиска модулей: {}", e.getMessage());
+            }
+        }
+
+        return sourceRoots;
+    }
+
+    private static boolean isUnderAnySourceRoot(Path normalizedPath, List<Path> sourceRoots) {
+        for (Path root : sourceRoots) {
+            if (normalizedPath.startsWith(root)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ========== Stage 3: Graph extraction ==========
