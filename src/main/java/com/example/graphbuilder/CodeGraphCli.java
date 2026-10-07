@@ -73,10 +73,10 @@ public class CodeGraphCli {
         launcher.getEnvironment().setIgnoreDuplicateDeclarations(true);
         launcher.getEnvironment().setIgnoreSyntaxErrors(true);
 
-        String srcMainJava = SRC_MAIN_JAVA.replace("/", "\\");
+        Path srcMainJavaPath = projectRoot.resolve(SRC_MAIN_JAVA).normalize();
         try (Stream<Path> walk = Files.walk(projectRoot)) {
             walk.filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> p.toAbsolutePath().normalize().toString().contains(srcMainJava))
+                    .filter(p -> p.toAbsolutePath().normalize().startsWith(srcMainJavaPath))
                     .filter(path -> !path.toString().contains(TARGET_DIR))
                     .filter(path -> !path.toString().contains(GIT_DIR))
                     .filter(path -> !path.toAbsolutePath().normalize().endsWith("CodeGraphCli.java"))
