@@ -8,10 +8,27 @@ import org.springframework.context.ApplicationContext;
 public class GraphbuilderApplication {
 
 	public static void main(String[] args) throws Exception {
-		ApplicationContext context = SpringApplication.run(GraphbuilderApplication.class, args);
+		boolean mcpMode = java.util.Arrays.asList(args).contains("--mcp");
+
+		SpringApplication app = new SpringApplication(GraphbuilderApplication.class);
+		if (mcpMode) {
+			// В MCP-режиме stdout занят протоколом — логи только в файл.
+			args = new String[]{
+					"--spring.main.banner-mode=off",
+					"--spring.main.web-application-type=none",
+					"--logging.console.enabled=false",
+					"--logging.file.name=code-graph-mcp.log"
+			};
+		}
+
+		ApplicationContext context = app.run(args);
 
 		CodeGraphCli codeGraphCli = context.getBean(CodeGraphCli.class);
-		codeGraphCli.generateGraphDependencies(args);
+		if (mcpMode) {
+			context.getBean(CodeGraphMcpServer.class).run();
+		} else {
+			codeGraphCli.generateGraphDependencies(args);
+		}
 	}
 
 }

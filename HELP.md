@@ -2,6 +2,42 @@
 
 запуск: `java -jar ./target/graphbuilder-0.0.1-SNAPSHOT.jar путь_к_проекту`
 
+## MCP-режим (Model Context Protocol)
+
+Тот же jar может работать как MCP-сервер над stdio:
+
+```bash
+java -jar ./target/graphbuilder-0.0.1-SNAPSHOT.jar --mcp
+```
+
+- Протокол: newline-delimited JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`).
+- В MCP-режиме stdout отдаётся протоколу; логи Spring пишутся в `code-graph-mcp.log` в рабочем каталоге.
+- Пример конфигурации клиента (Claude Desktop / ZCode):
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "command": "java",
+      "args": ["-jar", "/путь/к/graphbuilder-0.0.1-SNAPSHOT.jar", "--mcp"]
+    }
+  }
+}
+```
+
+### Инструменты
+
+| Инструмент | Назначение |
+|---|---|
+| `analyze_project` | Запустить анализ проекта, записать `.code-graph/`, вернуть сводку (число классов/рёбер/эндпоинтов) |
+| `get_meta` | Прочитать `meta.json` |
+| `get_graph` | Рёбра `graph.tsv`; фильтры `edge_type` (extends/implements/stereotype/autowire_field/call/instantiate/has_transaction/listens_to_event/declares_bean) и `contains` |
+| `get_called_by` | Обратные вызовы `called_by.tsv`; фильтр `target` (подстрока) |
+| `get_endpoints` | Прочитать `endpoints.jsonl` |
+| `list_classes` | Список проанализированных классов |
+| `get_class` | Дамп класса по FQCN (`classes/<FQCN>.json`) |
+
+Каждому инструменту, кроме `get_class`, нужен аргумент `path` — путь к корню анализируемого проекта. Если индекс ещё не построен, инструменты чтения вернут ошибку с подсказкой вызвать `analyze_project`.
+
 ---
 Добавить в AGENTS.md(GIGACODE.md)
 
