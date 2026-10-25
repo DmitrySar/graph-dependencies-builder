@@ -98,6 +98,21 @@ Select-String -Path .code-graph\endpoints.jsonl -Pattern '"method":"POST"' | Sel
 # Alternatively, using ripgrep (if rg.exe is installed):
 rg '"/api/v1/orders"' .code-graph\endpoints.jsonl
 rg '"method":"POST"' .code-graph\endpoints.jsonl | rg '/orders'
-
+```
 
 ---
+
+## ZCode-скилл use-code-graph
+
+В репозитории лежит скилл для ZCode: `.agents/skills/use-code-graph/SKILL.md`. Он учит модель экономно работать с этим MCP: проверять свежесть индекса, запрашивать узко (фильтры `target`/`edge_type`/`contains`), не читать tsv-файлы целиком, а вопросы «где объявлен / кто вызывает» решать одним вызовом вместо серии grep-раундов.
+
+Скилл в проекте действует только для чатов, открытых в этом проекте. Чтобы подключить его **во всех проектах на другом компьютере**, скопируйте каталог скилла в личный каталог скиллов ZCode той машины:
+
+```bash
+mkdir -p ~/.agents/skills
+cp -r <путь-к-graphbuilder>/.agents/skills/use-code-graph ~/.agents/skills/
+```
+
+После копирования скилл подхватывается автоматически: ZCode сканирует `~/.agents/skills/` при старте каждого чата и загружает скилл, когда вопрос совпадает с его описанием (поиск кода, вызовы методов, эндпоинты, Spring-связи при доступном MCP code-graph). Явная команда `/use-code-graph` тоже работает, но не обязательна.
+
+Скилл — это каталог, а не отдельный файл: переносить нужно целиком `.agents/skills/use-code-graph/`. Если graphbuilder закоммичен в git, скилл приедет на другую машину при clone — останется только команда `cp -r` выше.
