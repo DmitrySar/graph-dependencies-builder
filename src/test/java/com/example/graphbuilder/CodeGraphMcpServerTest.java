@@ -59,7 +59,8 @@ class CodeGraphMcpServerTest {
         new CodeGraphCli().generateGraphDependencies(new String[]{tempDir.toString()});
 
         JsonNode response = request(4, "tools/call",
-                "{\"name\":\"get_meta\",\"arguments\":{\"path\":\"" + tempDir + "\"}}");
+                "{\"name\":\"get_meta\",\"arguments\":{\"path\":"
+                        + mapper.writeValueAsString(tempDir.toString()) + "}}");
         assertTrue(response.path("result").path("isError").asBoolean() == false);
         String text = response.path("result").path("content").get(0).path("text").asText();
         assertTrue(text.contains("build_system"));
@@ -71,7 +72,8 @@ class CodeGraphMcpServerTest {
         new CodeGraphCli().generateGraphDependencies(new String[]{tempDir.toString()});
 
         JsonNode response = request(5, "tools/call",
-                "{\"name\":\"get_graph\",\"arguments\":{\"path\":\"" + tempDir + "\",\"edge_type\":\"stereotype\"}}");
+                "{\"name\":\"get_graph\",\"arguments\":{\"path\":"
+                        + mapper.writeValueAsString(tempDir.toString()) + ",\"edge_type\":\"stereotype\"}}");
         String text = response.path("result").path("content").get(0).path("text").asText();
         assertFalse(text.isEmpty());
         assertTrue(text.lines().allMatch(l -> l.isBlank()
